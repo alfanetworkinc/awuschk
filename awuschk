@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+
+function scan_usbdevices(){
+	local dpath="/sys/bus/usb/devices"
+
+	for item in `find $dpath -maxdepth 1 -type l`
+	do
+		rpath=$(readlink -f $item)
+		[ -e "$rpath/idVendor" -a -e "$rpath/idProduct" ] || { continue; }
+
+		idV=$(cat "$rpath/idVendor")
+		idP=$(cat "$rpath/idProduct")
+		idVP="$idV:$idP"
+
+		printf "%s %s\n" "$idVP" "$rpath"
+
+		check_usbdevice $idVP
+	done
+}
+
+function check_usbdevice(){
+	local idvp="$1"
+
+	case "$idvp" in
+		0bda:8187)
+			echo "AWUS036H"
+		;;
+
+		0bda:8812)
+			echo "AWUS036AC"
+			echo "AWUS036ACH"
+		;;
+
+		0bda:8813)
+			echo "AWUS1900"
+		;;
+
+		0e8d:7612)
+			echo "AWUS036ACM"
+		;;
+
+		*)
+			# not recognized, pass
+		;;
+	esac
+}
+
+scan_usbdevices
