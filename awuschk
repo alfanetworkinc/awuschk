@@ -3,46 +3,211 @@
 function scan_usbdevices(){
 	local dpath="/sys/bus/usb/devices"
 
+	check_env
+	check_os_version
 	for item in `find $dpath -maxdepth 1 -type l`
 	do
 		rpath=$(readlink -f $item)
-		[ -e "$rpath/idVendor" -a -e "$rpath/idProduct" ] || { continue; }
-
-		idV=$(cat "$rpath/idVendor")
-		idP=$(cat "$rpath/idProduct")
-		idVP="$idV:$idP"
-
-		printf "%s %s\n" "$idVP" "$rpath"
-
-		check_usbdevice $idVP
+		check_usbdevice $rpath
 	done
 }
 
-function check_usbdevice(){
-	local idvp="$1"
+function usbdev_get_vid_pid(){
+	local device_path="$1"
+
+	[ -e "$device_path/idVendor" -a -e "$device_path/idProduct" ] || return
+
+	var_vid=$(cat "$device_path/idVendor")
+	var_pid=$(cat "$device_path/idProduct")
+	printf "%s:%s" "$var_vid" "$var_pid"
+}
+
+function usbdev_get_usb_ver(){
+	local device_path="$1"
+
+	[ -e "$device_path/version" ] || return
+
+	cat "$device_path/version"
+}
+
+function check_usbdevice_usb_ver(){
+	local device_path="$1"
+
+	local usb_ver=$(usbdev_get_usb_ver $device_path)
+
+	printf "USB Ver: $usb_ver\n"
+}
+
+function check_usbdevice_usb_drv(){
+	local device_path="$1"
+
+	local postfix=$(basename $device_path)
+	local item=$( cd $device_path; find . -maxdepth 1 -type d | cut -c3- | grep -e "$postfix:" )
+	local device_path2="$device_path/$item"
+	local drv_path="$device_path2/driver"
+	if [ -e "$drv_path" ]
+	then
+		local mod_path="$(readlink -f $drv_path/module/)"
+		local modname=$(basename $mod_path)
+		printf "Driver: $modname\n"
+		(
+		printf "==== modinfo beg ====\n"
+		modinfo $modname | grep -v -e '^\s*alias:\s'
+		printf "==== modinfo end ====\n"
+		printf "\n"
+		) | sed -e 's/^/	/g'
+	else
+		printf "Driver: (not found)\n"
+	fi
+
+}
+
+function check_usbdevice_usb_iw(){
+	local device_path="$1"
+
+	local postfix=$(basename $device_path)
+	local item=$( cd $device_path; find . -maxdepth 1 -type d | cut -c3- | grep -e "$postfix:" )
+	local device_path2="$device_path/$item"
+
+	if [ -e "$device_path2/net" ] ; then
+		local item_dev=$( cd "$device_path2/net"; find . -mindepth 1 -maxdepth 1 -type d | xargs basename )
+		printf "==== iw dev <devname> info beg ====\n"
+		(
+		printf "devname: $item_dev\n"
+		iw dev $item_dev info
+		printf "\n"
+		)
+		printf "==== iw dev <devname> info end ====\n"
+		printf "==== ip link beg ====\n"
+		(
+		ip link show $item_dev
+		printf "\n"
+		)
+		printf "==== ip link end ====\n"
+	fi
+
+	if [ -e "$device_path2/ieee80211" ] ; then
+		local item_phy=$( cd "$device_path2/ieee80211"; find . -mindepth 1 -maxdepth 1 -type d | xargs basename )
+		printf "==== iw phy <phyname> info beg ====\n"
+		(
+		printf "phyname: $item_phy\n"
+		iw phy $item_phy info
+		printf "\n"
+		)
+		printf "==== iw phy <phyname> info end ====\n"
+
+		local rfkill_id=$( rfkill | grep -e "${item_phy}" | awk '{print $1}')
+		printf "==== rfkill beg ====\n"
+		(
+		rfkill list $rfkill_id
+		printf "\n"
+		)
+		printf "==== rfkill end ====\n"
+	fi
+}
+
+function check_usbdevice_model(){
+	local device_path="$1"
+
+	local idvp="$(usbdev_get_vid_pid $device_path)"
+	local model=""
 
 	case "$idvp" in
 		0bda:8187)
-			echo "AWUS036H"
+			model="AWUS036H"
+		;;
+
+		0bda:817f)
+			model="AWUS036NHR"
+		;;
+
+		0bda:0811)
+			model="AWUS036ACS"
 		;;
 
 		0bda:8812)
-			echo "AWUS036AC"
-			echo "AWUS036ACH"
+			model="AWUS036AC AWUS036ACH"
 		;;
 
 		0bda:8813)
-			echo "AWUS1900"
+			model="AWUS1900"
 		;;
 
 		0e8d:7612)
-			echo "AWUS036ACM"
+			model="AWUS036ACM"
+		;;
+
+		148f:3070)
+			model="AWUS036NH AWUS036NEH"
+		;;
+
+		0cf3:9271)
+			model="AWUS036NHA"
 		;;
 
 		*)
 			# not recognized, pass
+			model="(SKIP)"
 		;;
 	esac
+
+	[ "$model" = "(SKIP)" ] && return 1
+	printf "VID,PID: $idvp\n"
+	printf "Model: $model\n"
+
+}
+
+get_vm_env(){
+	[ -e "/.dockerenv" ] && { echo "docker"; return; }
+	( dmesg -t | grep -ie '^DMI:\s.*virtualbox.*' 2>/dev/null >/dev/null ) && { echo "virtualbox"; return; }
+	( dmesg -t | grep -ie '^DMI:\s.*vmware.*' 2>/dev/null >/dev/null ) && { echo "vmware"; return; }
+
+	echo "(none)"; return;
+}
+
+check_os_version(){
+	local has_lsb=$(which lsb_release >/dev/null 2>/dev/null && echo "yes" || echo "no")
+
+	if [ "$has_lsb" != "yes" ]
+	then
+		echo "Warning: Please install 'lsb-release' package to detect OS version."
+		return;
+	fi
+
+	os_name=$(lsb_release -s --id)
+	os_ver=$(lsb_release -s --release --codename | tr "\n" " ")
+	os_vm=$(get_vm_env)
+
+	printf "OS distro: $os_name\n"
+	printf "OS version: $os_ver\n"
+	printf "VM: $os_vm\n"
+	(
+	printf "==== lsb_release beg ====\n"
+	lsb_release -a 2>/dev/null
+	printf "==== lsb_release end ====\n"
+	printf "\n"
+	) | sed -e 's/^/    /g'
+}
+
+check_env(){
+	printf "Date: $(date --iso-8601=s)\n"
+	printf "Run as user: $(whoami)\n"
+	printf "ARCH: $(uname -m)\n"
+	printf "Kernel version: $(uname -a)\n"
+}
+
+function check_usbdevice(){
+	local device_path="$1"
+
+	check_usbdevice_model $device_path >/dev/null || return
+	local idvp="$(usbdev_get_vid_pid $device_path)"
+	printf "==== %s ================================================\n" "$idvp"
+	printf "%s: %s\n" "Device path" "$device_path"
+	check_usbdevice_model $device_path
+	check_usbdevice_usb_ver $device_path
+	check_usbdevice_usb_drv $device_path
+	check_usbdevice_usb_iw  $device_path
+	printf "\n"
 }
 
 scan_usbdevices
